@@ -38,7 +38,7 @@ const (
 
 	AuthCreated         State = "AuthCreated"
 	AuthFailed          State = "AuthFailed"
-	AuthPending         State = "AuthPending"
+	AuthPending         State = "AuthPending" // TODO: send pending state to GPM
 	AuthRetry           State = "AuthRetry"
 	AuthSucceeded       State = "AuthSucceeded"
 	AuthWaitForRetry    State = "AuthWaitForRetry"
@@ -47,7 +47,7 @@ const (
 	Failed              State = "Failed"
 	New                 State = "New"
 	PaymentCreated      State = "PaymentCreated"
-	PaymentFailed       State = "PaymentFailed"
+	PaymentFailed       State = "PaymentFailed" // TODO: payment can't have failed status
 	PaymentPending      State = "PaymentPending"
 	PaymentRetry        State = "PaymentRetry"
 	PaymentSucceeded    State = "PaymentSucceeded"
