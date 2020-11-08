@@ -1,0 +1,7 @@
+os: linux
+dist: xenial
+language: go
+go:
+  - 1.x
+script:
+  - make test
