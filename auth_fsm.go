@@ -1,6 +1,9 @@
 package fsm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type Memory struct {
 	PaymentStatus   string
@@ -13,13 +16,15 @@ type Memory struct {
 
 type State string
 type Event string
+type Callback func(*Memory) error
+type Condition func(Memory) bool
 
 type AuthFSMDefinition struct {
 	InitialState             State
 	InitialMemory            Memory
-	Callbacks                map[State]func(*Memory)
+	Callbacks                map[State]Callback
 	EventTransitions         map[State]map[Event]State
-	ConditionalTransitions   map[State]map[State]func(Memory) bool
+	ConditionalTransitions   map[State]map[State]Condition
 	UnconditionalTransitions map[State]State
 }
 
@@ -70,13 +75,13 @@ const (
 )
 
 type Callbacks interface {
-	CreateAuth(*Memory)
-	CreatePayment(*Memory)
-	GetAuthStatusFromZooz(*Memory)
-	GetPaymentStatusFromZooz(*Memory)
-	ScheduleJob(*Memory)
-	SendErrorToGPM(*Memory)
-	SendSuccessToGPM(*Memory)
+	CreateAuth(*Memory) error
+	CreatePayment(*Memory) error
+	GetAuthStatusFromZooz(*Memory) error
+	GetPaymentStatusFromZooz(*Memory) error
+	ScheduleJob(*Memory) error
+	SendErrorToGPM(*Memory) error
+	SendSuccessToGPM(*Memory) error
 }
 
 func NewAuthFSMDefinition(c Callbacks) AuthFSMDefinition {
@@ -90,7 +95,7 @@ func NewAuthFSMDefinition(c Callbacks) AuthFSMDefinition {
 			AuthError:       "",
 			AuthAttempts:    0,
 		},
-		Callbacks: map[State]func(*Memory){
+		Callbacks: map[State]Callback{
 			AuthPending:         c.ScheduleJob,
 			AuthRetry:           c.CreateAuth,
 			AuthWaitForRetry:    c.ScheduleJob,
@@ -133,7 +138,7 @@ func NewAuthFSMDefinition(c Callbacks) AuthFSMDefinition {
 				RequestFromGPM: SendingSuccessToGPM,
 			},
 		},
-		ConditionalTransitions: map[State]map[State]func(Memory) bool{
+		ConditionalTransitions: map[State]map[State]Condition{
 			AuthCreated: {
 				AuthFailed:    func(m Memory) bool { return m.AuthStatus == "failed" },
 				AuthPending:   func(m Memory) bool { return m.AuthStatus == "pending" },
@@ -166,33 +171,35 @@ func NewAuthFSMDefinition(c Callbacks) AuthFSMDefinition {
 	}
 }
 
-func (d AuthFSMDefinition) Validate() {
+func (d AuthFSMDefinition) Validate() error {
 	for from := range d.EventTransitions {
 		if _, ok := d.ConditionalTransitions[from]; ok {
-			panic(fmt.Sprintf("different transition types from %q", from))
+			return fmt.Errorf("different transition types from %q", from)
 		}
 		if _, ok := d.UnconditionalTransitions[from]; ok {
-			panic(fmt.Sprintf("different transition types from %q", from))
+			return fmt.Errorf("different transition types from %q", from)
 		}
 	}
 	for from := range d.ConditionalTransitions {
 		if _, ok := d.UnconditionalTransitions[from]; ok {
-			panic(fmt.Sprintf("different transition types from %q", from))
+			return fmt.Errorf("different transition types from %q", from)
 		}
 	}
 
 	if _, ok := d.EventTransitions[d.InitialState]; !ok {
-		panic(fmt.Sprintf("initial state %q should be permanent", d.InitialState))
+		return fmt.Errorf("initial state %q should be permanent", d.InitialState)
 	}
 
 	for from, to := range d.UnconditionalTransitions {
 		if from == to {
-			panic(fmt.Sprintf("unconditional transition from %q", from))
+			return fmt.Errorf("unconditional transition from %q", from)
 		}
 	}
 
 	// TODO: check graph connectivity (that all states can be reached from initial)
 	// TODO: check that all callbacks are defined on reachable states
+
+	return nil
 }
 
 func (d AuthFSMDefinition) New() *AuthFSMInstance {
@@ -200,7 +207,7 @@ func (d AuthFSMDefinition) New() *AuthFSMInstance {
 	permanentStates := map[State]struct{}{}
 	allEvents := map[Event]struct{}{}
 
-	callbacks := map[State]func(*Memory){}
+	callbacks := map[State]Callback{}
 	for from, fn := range d.Callbacks {
 		allStates[from] = struct{}{}
 		if fn != nil {
@@ -223,10 +230,10 @@ func (d AuthFSMDefinition) New() *AuthFSMInstance {
 		}
 	}
 
-	conditionalTransitions := map[State]map[State]func(Memory) bool{}
+	conditionalTransitions := map[State]map[State]Condition{}
 	for from, transitions := range d.ConditionalTransitions {
 		allStates[from] = struct{}{}
-		transitionsCopy := map[State]func(Memory) bool{}
+		transitionsCopy := map[State]Condition{}
 		for to, cond := range transitions {
 			allStates[to] = struct{}{}
 			if cond != nil {
@@ -264,71 +271,91 @@ func (d AuthFSMDefinition) New() *AuthFSMInstance {
 	}
 }
 
-func (d AuthFSMDefinition) Restore(current State, memory Memory) *AuthFSMInstance {
+func (d AuthFSMDefinition) Restore(current State, memory Memory) (*AuthFSMInstance, error) {
 	a := d.New()
 	a.Current = current
 	a.Memory = &memory
 	if _, ok := a.PermanentStates[current]; !ok {
-		panic(fmt.Sprintf("can restore: state %q should be permanent", current))
+		return nil, fmt.Errorf("can restore: state %q should be permanent", current)
 	}
-	return a
+	return a, nil
 }
 
-func (a *AuthFSMInstance) ProcessEvent(event Event) {
+func (a *AuthFSMInstance) ProcessEvent(event Event) error {
 	if _, ok := a.PermanentStates[a.Current]; !ok {
-		panic(fmt.Sprintf("current state %q is not permanent", a.Current))
+		return fmt.Errorf("current state %q is not permanent", a.Current)
 	}
 
 	if _, ok := a.Events[event]; !ok {
-		panic(fmt.Sprintf("unknown event %q", event))
+		return fmt.Errorf("unknown event %q", event)
 	}
 
 	newState, ok := a.Definition.EventTransitions[a.Current][event]
 	if !ok {
-		panic(fmt.Sprintf("no transition from %q for event %q", a.Current, event))
+		return fmt.Errorf("no transition from %q for event %q", a.Current, event)
 	}
 
-	a.switchTo(newState)
-	a.goToNextPermanentState()
+	err := a.switchTo(newState)
+	if err != nil {
+		return err
+	}
+
+	return a.goToNextPermanentState()
 }
 
-func (a *AuthFSMInstance) goToNextPermanentState() {
+func (a *AuthFSMInstance) goToNextPermanentState() error {
 	for {
 		if _, ok := a.PermanentStates[a.Current]; ok {
-			return
+			return nil
 		}
 
 		if newState, ok := a.Definition.UnconditionalTransitions[a.Current]; ok {
-			a.switchTo(newState)
+			err := a.switchTo(newState)
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
 		if transitions, ok := a.Definition.ConditionalTransitions[a.Current]; ok {
-			var newState *State
+			var newState []State
 			for candidate, cond := range transitions {
 				if cond(*a.Memory) {
-					if newState != nil {
-						panic(fmt.Sprintf("two conditional transitions returned true: %q -> %q and %q -> %q", a.Current, *newState, a.Current, candidate))
-					}
-					newState = &candidate
+					newState = append(newState, candidate)
 				}
 			}
-			if newState == nil {
-				panic(fmt.Sprintf("all conditional transitions returned false from %q", a.Current))
+			switch len(newState) {
+			case 1:
+				err := a.switchTo(newState[0])
+				if err != nil {
+					return err
+				}
+			case 0:
+				return fmt.Errorf("all conditional transitions returned false from %q", a.Current)
+			default:
+				x := make([]string, 0, len(newState))
+				for _, n := range newState {
+					x = append(x, fmt.Sprintf("%q->%q", a.Current, n))
+				}
+				return fmt.Errorf("%d transactions possible: %s", len(newState), strings.Join(x, ", "))
 			}
-			a.switchTo(*newState)
 			continue
 		}
 
 		panic("should never happen")
 	}
+	return nil
 }
 
-func (a *AuthFSMInstance) switchTo(newState State) {
+func (a *AuthFSMInstance) switchTo(newState State) error {
 	if fn, ok := a.Definition.Callbacks[newState]; ok {
-		fn(a.Memory)
+		err := fn(a.Memory)
+		if err != nil {
+			return fmt.Errorf("on enter to %q from %q: %w", newState, a.Current, err)
+		}
 	}
 	a.Current = newState
+	return nil
 }
 
 func canRetry(err string) bool {
