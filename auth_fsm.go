@@ -274,6 +274,63 @@ func (d AuthFSMDefinition) Restore(current State, memory Memory) *AuthFSMInstanc
 	return a
 }
 
+func (a *AuthFSMInstance) ProcessEvent(event Event) {
+	if _, ok := a.PermanentStates[a.Current]; !ok {
+		panic(fmt.Sprintf("current state %q is not permanent", a.Current))
+	}
+
+	if _, ok := a.Events[event]; !ok {
+		panic(fmt.Sprintf("unknown event %q", event))
+	}
+
+	newState, ok := a.Definition.EventTransitions[a.Current][event]
+	if !ok {
+		panic(fmt.Sprintf("no transition from %q for event %q", a.Current, event))
+	}
+
+	a.switchTo(newState)
+	a.goToNextPermanentState()
+}
+
+func (a *AuthFSMInstance) goToNextPermanentState() {
+	for {
+		if _, ok := a.PermanentStates[a.Current]; ok {
+			return
+		}
+
+		if newState, ok := a.Definition.UnconditionalTransitions[a.Current]; ok {
+			a.switchTo(newState)
+			continue
+		}
+
+		if transitions, ok := a.Definition.ConditionalTransitions[a.Current]; ok {
+			var newState *State
+			for candidate, cond := range transitions {
+				if cond(*a.Memory) {
+					if newState != nil {
+						panic(fmt.Sprintf("two conditional transitions returned true: %q -> %q and %q -> %q", a.Current, *newState, a.Current, candidate))
+					}
+					newState = &candidate
+				}
+			}
+			if newState == nil {
+				panic(fmt.Sprintf("all conditional transitions returned false from %q", a.Current))
+			}
+			a.switchTo(*newState)
+			continue
+		}
+
+		panic("should never happen")
+	}
+}
+
+func (a *AuthFSMInstance) switchTo(newState State) {
+	if fn, ok := a.Definition.Callbacks[newState]; ok {
+		fn(a.Memory)
+	}
+	a.Current = newState
+}
+
 func canRetry(err string) bool {
 	return err == "can retry"
 }

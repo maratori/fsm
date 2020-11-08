@@ -15,6 +15,10 @@ func TestFSM(t *testing.T) {
 	def.Validate()
 	auth := def.New()
 	assert.Equal(t, fsm.Initial, auth.Current)
+
+	assert.PanicsWithValue(t, `no transition from "Initial" for event "Job"`, func() {
+		auth.ProcessEvent(fsm.Job)
+	})
 	callbacks.AssertExpectations(t)
 }
 
