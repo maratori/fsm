@@ -1,0 +1,91 @@
+@startuml
+hide empty description
+
+title Authorization FSM\n
+
+legend right
+  == External Events ==
+  * AuthWebhookFromZooz
+  * Job
+  * PaymentWebhookFromZooz
+  * RequestFromGPM
+  == Memory ==
+  * authAttempts
+  * authError
+  * authStatus
+  * paymentAttempts
+  * paymentError
+  * paymentStatus
+end legend
+
+skinparam StateBackgroundColor<<Permanent>> LightBlue
+
+state Initial             <<Permanent>>
+state New                               : createPayment()
+state PaymentCreated
+state PaymentSucceeded                  : createAuth()
+state PaymentPending      <<Permanent>> : scheduleJob()
+state PaymentFailed
+state PaymentWaitForRetry <<Permanent>> : scheduleJob()
+state CheckPaymentStatus                : getPaymentStatusFromZooz()
+state PaymentRetry                      : createPayment() \npaymentAttempts++
+state AuthCreated
+state AuthSucceeded
+state AuthPending         <<Permanent>> : scheduleJob()
+state AuthFailed
+state AuthWaitForRetry    <<Permanent>> : scheduleJob()
+state CheckAuthStatus                   : getAuthStatusFromZooz()
+state AuthRetry                         : createAuth() \nauthAttempts++
+state SendingSuccessToGPM               : sendSuccessToGPM()
+state Succeeded           <<Permanent>>
+state SendingErrorToGPM                 : sendErrorToGPM()
+state Failed              <<Permanent>>
+
+
+Initial             -right[bold]->   New                 : **RequestFromGPM**
+New                 -[dashed]->      PaymentCreated
+
+PaymentCreated      -left->          PaymentPending      : [paymentStatus == "pending"]
+PaymentCreated      -left[hidden]->  PaymentPending      : xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+PaymentPending      -[bold]->        CheckPaymentStatus  : **Job**
+PaymentPending      -[bold]->        CheckPaymentStatus  : **RequestFromGPM**
+PaymentPending      -right[bold]->   PaymentCreated      : **PaymentWebhookFromZooz**
+CheckPaymentStatus  -up[dashed]->    PaymentCreated
+
+PaymentCreated      -right->         PaymentFailed       : [paymentStatus == "failed"]
+PaymentFailed       -->              PaymentWaitForRetry : [canRetry(paymentError) \n && paymentAttempts < 5]
+PaymentWaitForRetry -[bold]->        PaymentRetry        : **Job**
+PaymentWaitForRetry -[bold]->        PaymentRetry        : **RequestFromGPM**
+PaymentRetry        -up[dashed]->    PaymentCreated
+
+PaymentFailed       -->              SendingErrorToGPM   : [paymentAttempts >= 5 \n || !canRetry(paymentError)]
+
+PaymentCreated      --->             PaymentSucceeded    : [paymentStatus == "succeeded"]
+PaymentSucceeded    -[dashed]->      AuthCreated
+
+AuthCreated         -left->          AuthPending         : [authStatus == "pending"]
+AuthCreated         -left[hidden]->  AuthPending         : xxxxxxxxxxxxxxxxxxxxxxxxx
+AuthPending         -[bold]->        CheckAuthStatus     : **Job**
+AuthPending         -[bold]->        CheckAuthStatus     : **RequestFromGPM**
+AuthPending         -right[bold]->   AuthCreated         : **AuthWebhookFromZooz**
+CheckAuthStatus     -up[dashed]->    AuthCreated
+
+AuthCreated         -right->         AuthFailed          : [authStatus == "failed"]
+AuthFailed          -->              AuthWaitForRetry    : [canRetry(authError) \n && authAttempts < 5]
+AuthWaitForRetry    -[bold]->        AuthRetry           : **Job**
+AuthWaitForRetry    -[bold]->        AuthRetry           : **RequestFromGPM**
+AuthRetry           -up[dashed]->    AuthCreated
+
+AuthCreated         --->             AuthSucceeded       : [authStatus == "succeeded"]
+AuthSucceeded       -[dashed]->      SendingSuccessToGPM
+SendingSuccessToGPM -[dashed]->      Succeeded
+SendingSuccessToGPM -[hidden]->      Succeeded
+Succeeded           -[bold]->        SendingSuccessToGPM : **RequestFromGPM**
+
+AuthFailed          -->              SendingErrorToGPM   : [authAttempts >= 5 \n || canRetry(authError)]
+SendingErrorToGPM   -[dashed]->      Failed
+SendingErrorToGPM   -[hidden]->      Failed
+Failed              -[bold]->        SendingErrorToGPM   : **RequestFromGPM**
+
+
+@enduml
