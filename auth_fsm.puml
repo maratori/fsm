@@ -11,81 +11,81 @@ legend right
   * RequestFromGPM
   == Memory ==
   * authAttempts
-  * authError
+  * authErr
+  * authFailureMessage
   * authStatus
   * paymentAttempts
-  * paymentError
+  * paymentErr
   * paymentStatus
+  * tokenAttempts
+  * tokenErr
 end legend
 
 skinparam StateBackgroundColor<<Permanent>> LightBlue
 
-state Initial             <<Permanent>>
-state New                               : createPayment()
+state Initial            <<Permanent>>
+state New                              : paymentStatus, paymentErr = createPayment()\npaymentAttempts++
 state PaymentCreated
-state PaymentSucceeded                  : createAuth()
-state PaymentPending      <<Permanent>> : scheduleJob()
-state PaymentFailed
-state PaymentWaitForRetry <<Permanent>> : scheduleJob()
-state CheckPaymentStatus                : getPaymentStatusFromZooz()
-state PaymentRetry                      : createPayment() \npaymentAttempts++
+state PaymentSucceeded                 : tokenErr = getTokenFromPMS()\ntokenAttempts++
+state TokenOK                          : authStatus, authFailureMessage, authErr = createAuth()\nauthAttempts++
 state AuthCreated
-state AuthSucceeded
-state AuthPending         <<Permanent>> : scheduleJob()
+state AuthSucceeded                    : sendSuccessToGPM()
+state Succeeded          <<Permanent>>
+state AuthError
 state AuthFailed
-state AuthWaitForRetry    <<Permanent>> : scheduleJob()
-state CheckAuthStatus                   : getAuthStatusFromZooz()
-state AuthRetry                         : createAuth() \nauthAttempts++
-state SendingSuccessToGPM               : sendSuccessToGPM()
-state Succeeded           <<Permanent>>
-state SendingErrorToGPM                 : sendErrorToGPM()
-state Failed              <<Permanent>>
+state AuthPending        <<Permanent>> : sendPendingToGPM()\nscheduleJob()
+state AuthRetry          <<Permanent>> : scheduleJob()
+state CheckAuthStatus                  : authStatus, authErr = getAuthStatusFromZooz()
+state CheckPaymentStatus               : paymentStatus = getPaymentStatusFromZooz()
+state Failed             <<Permanent>>
+state Failing                          : sendErrorToGPM()
+state PaymentError
+state PaymentPending     <<Permanent>> : scheduleJob()
+state PaymentRetry       <<Permanent>> : scheduleJob()
+state TokenError
+state TokenRetry         <<Permanent>> : scheduleJob()
 
 
-Initial             -right[bold]->   New                 : **RequestFromGPM**
-New                 -[dashed]->      PaymentCreated
+Initial             -[bold]->    New                : **RequestFromGPM**
+New                 ->           PaymentCreated     : [paymentErr == nil]
+PaymentCreated      --->         PaymentSucceeded   : [paymentStatus == "succeeded"]
+PaymentSucceeded    --->         TokenOK            : [tokenErr == nil]
+TokenOK             -->          AuthCreated        : [authErr == nil]
+AuthCreated         -->          AuthSucceeded      : [authStatus == "succeeded"]
+AuthSucceeded       -[dashed]->  Succeeded
+Succeeded           -[bold]->    AuthSucceeded      : **RequestFromGPM**
+Succeeded           -[hidden]->  AuthSucceeded
 
-PaymentCreated      -left->          PaymentPending      : [paymentStatus == "pending"]
-PaymentCreated      -left[hidden]->  PaymentPending      : xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-PaymentPending      -[bold]->        CheckPaymentStatus  : **Job**
-PaymentPending      -[bold]->        CheckPaymentStatus  : **RequestFromGPM**
-PaymentPending      -right[bold]->   PaymentCreated      : **PaymentWebhookFromZooz**
-CheckPaymentStatus  -up[dashed]->    PaymentCreated
-
-PaymentCreated      -right->         PaymentFailed       : [paymentStatus == "failed"]
-PaymentFailed       -->              PaymentWaitForRetry : [canRetry(paymentError) \n && paymentAttempts < 5]
-PaymentWaitForRetry -[bold]->        PaymentRetry        : **Job**
-PaymentWaitForRetry -[bold]->        PaymentRetry        : **RequestFromGPM**
-PaymentRetry        -up[dashed]->    PaymentCreated
-
-PaymentFailed       -->              SendingErrorToGPM   : [paymentAttempts >= 5 \n || !canRetry(paymentError)]
-
-PaymentCreated      --->             PaymentSucceeded    : [paymentStatus == "succeeded"]
-PaymentSucceeded    -[dashed]->      AuthCreated
-
-AuthCreated         -left->          AuthPending         : [authStatus == "pending"]
-AuthCreated         -left[hidden]->  AuthPending         : xxxxxxxxxxxxxxxxxxxxxxxxx
-AuthPending         -[bold]->        CheckAuthStatus     : **Job**
-AuthPending         -[bold]->        CheckAuthStatus     : **RequestFromGPM**
-AuthPending         -right[bold]->   AuthCreated         : **AuthWebhookFromZooz**
-CheckAuthStatus     -up[dashed]->    AuthCreated
-
-AuthCreated         -right->         AuthFailed          : [authStatus == "failed"]
-AuthFailed          -->              AuthWaitForRetry    : [canRetry(authError) \n && authAttempts < 5]
-AuthWaitForRetry    -[bold]->        AuthRetry           : **Job**
-AuthWaitForRetry    -[bold]->        AuthRetry           : **RequestFromGPM**
-AuthRetry           -up[dashed]->    AuthCreated
-
-AuthCreated         --->             AuthSucceeded       : [authStatus == "succeeded"]
-AuthSucceeded       -[dashed]->      SendingSuccessToGPM
-SendingSuccessToGPM -[dashed]->      Succeeded
-SendingSuccessToGPM -[hidden]->      Succeeded
-Succeeded           -[bold]->        SendingSuccessToGPM : **RequestFromGPM**
-
-AuthFailed          -->              SendingErrorToGPM   : [authAttempts >= 5 \n || canRetry(authError)]
-SendingErrorToGPM   -[dashed]->      Failed
-SendingErrorToGPM   -[hidden]->      Failed
-Failed              -[bold]->        SendingErrorToGPM   : **RequestFromGPM**
-
+AuthCreated         -->          AuthFailed         : [authStatus == "failed"]
+AuthCreated         -->          AuthPending        : [authStatus == "pending"]
+AuthError           -->          AuthRetry          : [canTechnicalRetry(\l   authErr,\l   authAttempts)]
+AuthError           -->          Failing            : [!canTechnicalRetry(\l   authErr,\l   authAttempts)]
+AuthFailed          -->          AuthRetry          : [canRetryAuth(\l   authFailureMessage,\l   authAttempts)]
+AuthFailed          -->          Failing            : [!canRetryAuth(\l   authFailureMessage,\l   authAttempts)]
+AuthPending         -[bold]->    AuthCreated        : **AuthWebhookFromZooz**
+AuthPending         -[bold]->    CheckAuthStatus    : **Job**
+AuthPending         -[bold]->    CheckAuthStatus    : **RequestFromGPM**
+AuthRetry           -[bold]->    TokenOK            : **Job**
+AuthRetry           -[bold]->    TokenOK            : **RequestFromGPM**
+CheckAuthStatus     -[dashed]->  AuthCreated
+CheckPaymentStatus  -[dashed]->  PaymentCreated
+Failed              -[bold]->    Failing            : **RequestFromGPM**
+Failed              -[hidden]->  Failing
+Failing             -[dashed]->  Failed
+New                 -->          PaymentError       : [paymentErr != nil]
+PaymentCreated      -->          PaymentPending     : [paymentStatus == "pending"]
+PaymentError        -->          Failing            : [!canRetryPayment(\l   paymentError,\l   paymentAttempts)]
+PaymentError        -->          PaymentRetry       : [canRetryPayment(\l   paymentError,\l   paymentAttempts)]
+PaymentPending      -[bold]->    CheckPaymentStatus : **Job**
+PaymentPending      -[bold]->    CheckPaymentStatus : **RequestFromGPM**
+PaymentPending      -[bold]->    PaymentCreated     : **PaymentWebhookFromZooz**
+PaymentRetry        -[bold]->    New                : **Job**
+PaymentRetry        -[bold]->    New                : **RequestFromGPM**
+PaymentSucceeded    -->          TokenError         : [tokenErr != nil]
+TokenError          -->          Failing            : [!canRetryToken(\l   tokenErr,\l   tokenAttempts)]
+TokenError          -->          TokenRetry         : [canRetryToken(\l   tokenErr,\l   tokenAttempts)]
+TokenOK             -->          AuthError          : [authErr != nil]
+TokenRetry          -[bold]->    PaymentSucceeded   : **Job**
+TokenRetry          -[bold]->    PaymentSucceeded   : **RequestFromGPM**
 
 @enduml
