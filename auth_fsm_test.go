@@ -12,6 +12,7 @@ func TestFSM(t *testing.T) {
 	callbacks := &MockCallbacks{}
 	callbacks.Test(t)
 	auth := fsm.NewAuthFSM(callbacks)
+	auth.Validate()
 	assert.Equal(t, fsm.Initial, auth.Current)
 	callbacks.AssertExpectations(t)
 }

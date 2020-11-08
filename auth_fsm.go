@@ -1,5 +1,7 @@
 package fsm
 
+import "fmt"
+
 type Memory struct {
 	PaymentStatus   string
 	PaymentError    string
@@ -20,7 +22,7 @@ type AuthFSM struct {
 	Events                   map[Event]struct{}
 	Callbacks                map[State]func(*Memory)
 	EventTransitions         map[State]map[Event]State
-	ConditionalTransitions   map[State]func(Memory) State
+	ConditionalTransitions   map[State]map[State]func(Memory) bool
 	UnconditionalTransitions map[State]State
 }
 
@@ -152,46 +154,24 @@ func NewAuthFSM(c Callbacks) *AuthFSM {
 				RequestFromGPM: SendingSuccessToGPM,
 			},
 		},
-		ConditionalTransitions: map[State]func(Memory) State{
-			AuthCreated: func(m Memory) State {
-				switch m.AuthStatus {
-				case "failed":
-					return AuthFailed
-				case "pending":
-					return AuthPending
-				case "succeeded":
-					return AuthSucceeded
-				default:
-					panic(m.AuthStatus)
-				}
+		ConditionalTransitions: map[State]map[State]func(Memory) bool{
+			AuthCreated: {
+				AuthFailed:    func(m Memory) bool { return m.AuthStatus == "failed" },
+				AuthPending:   func(m Memory) bool { return m.AuthStatus == "pending" },
+				AuthSucceeded: func(m Memory) bool { return m.AuthStatus == "succeeded" },
 			},
-			AuthFailed: func(m Memory) State {
-				switch {
-				case m.AuthAttempts < MaxAuthAttempts && canRetry(m.AuthError):
-					return AuthWaitForRetry
-				default:
-					return SendingErrorToGPM
-				}
+			AuthFailed: {
+				AuthWaitForRetry:  func(m Memory) bool { return canRetry(m.AuthError) && m.AuthAttempts < MaxAuthAttempts },
+				SendingErrorToGPM: func(m Memory) bool { return !canRetry(m.AuthError) || m.AuthAttempts >= MaxAuthAttempts },
 			},
-			PaymentCreated: func(m Memory) State {
-				switch m.PaymentStatus {
-				case "failed":
-					return PaymentFailed
-				case "pending":
-					return PaymentPending
-				case "succeeded":
-					return PaymentSucceeded
-				default:
-					panic(m.PaymentStatus)
-				}
+			PaymentCreated: {
+				PaymentFailed:    func(m Memory) bool { return m.PaymentStatus == "failed" },
+				PaymentPending:   func(m Memory) bool { return m.PaymentStatus == "pending" },
+				PaymentSucceeded: func(m Memory) bool { return m.PaymentStatus == "succeeded" },
 			},
-			PaymentFailed: func(m Memory) State {
-				switch {
-				case m.PaymentAttempts < MaxPaymentAttempts && canRetry(m.PaymentError):
-					return PaymentWaitForRetry
-				default:
-					return SendingErrorToGPM
-				}
+			PaymentFailed: {
+				PaymentWaitForRetry: func(m Memory) bool { return canRetry(m.PaymentError) && m.PaymentAttempts < MaxPaymentAttempts },
+				SendingErrorToGPM:   func(m Memory) bool { return !canRetry(m.PaymentError) || m.PaymentAttempts >= MaxPaymentAttempts },
 			},
 		},
 		UnconditionalTransitions: map[State]State{
@@ -204,6 +184,61 @@ func NewAuthFSM(c Callbacks) *AuthFSM {
 			SendingErrorToGPM:   Failed,
 			SendingSuccessToGPM: Succeeded,
 		},
+	}
+}
+
+func (m *AuthFSM) Validate() {
+	m.validateState(m.Current)
+	for state, fn := range m.Callbacks {
+		m.validateState(state)
+		if fn == nil {
+			panic(fmt.Sprintf("nil callback for state %q", state))
+		}
+	}
+	transitionsFrom := map[State]struct{}{}
+	rememberTransitionFrom := func(state State) {
+		_, ok := transitionsFrom[state]
+		if ok {
+			panic(fmt.Sprintf("repeated transition from state %q", state))
+		}
+		transitionsFrom[state] = struct{}{}
+	}
+	for state, transitions := range m.EventTransitions {
+		m.validateState(state)
+		for event, newState := range transitions {
+			m.validateEvent(event)
+			m.validateState(newState)
+		}
+		rememberTransitionFrom(state)
+	}
+	for state, conditions := range m.ConditionalTransitions {
+		m.validateState(state)
+		for newState, condFn := range conditions {
+			m.validateState(newState)
+			if condFn == nil {
+				panic(fmt.Sprintf("nil condition for transition %q -> %q", state, newState))
+			}
+		}
+		rememberTransitionFrom(state)
+	}
+	for state, newState := range m.UnconditionalTransitions {
+		m.validateState(state)
+		m.validateState(newState)
+		rememberTransitionFrom(state)
+	}
+}
+
+func (m *AuthFSM) validateState(state State) {
+	_, ok := m.States[state]
+	if !ok {
+		panic(fmt.Sprintf("state %q is not in list of states", state))
+	}
+}
+
+func (m *AuthFSM) validateEvent(event Event) {
+	_, ok := m.Events[event]
+	if !ok {
+		panic(fmt.Sprintf("event %q is not in list of events", event))
 	}
 }
 
