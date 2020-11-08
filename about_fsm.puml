@@ -1,0 +1,96 @@
+@startuml
+hide empty description
+
+title About FSM with memory\n
+
+skinparam StateBackgroundColor<<Permanent>> LightBlue
+
+note " It's forbidden \n to have different \n transition types \n from single state" as Note
+
+state "Transition on external event received" as TTT1 {
+	state A <<Permanent>>
+	note right of A
+		State A is __permanent__
+		because FSM will wait
+		for external event
+		to change state.
+
+		FSM may be stored
+		in __DB__ in state A.
+	end note
+	A -[bold]---> B : **ExternalEventName**
+	A -[bold]---> C : **AnotherExternalEvent**
+}
+
+state "Transition by condition" as TTT2 {
+	D --> E : [a >= b]
+	D --> F : [a < b]
+	note right of D
+		State D is __intermediate__
+		because FSM will change
+		state according conditions.
+
+		Exactly one condition
+		must be **true**.
+
+		So FSM can't stay
+		(and can't be stored)
+		in state D.
+
+		Conditions use data
+		from FSM __memory__.
+	end note
+}
+
+state "Unconditional\ntransition" as TTT3 {
+	G -[dashed]--> H
+	note right of G
+		State G is __intermediate__
+		because FSM will change
+		state immediately without
+		any condition.
+
+		So FSM can't stay
+		(and can't be stored)
+		in state G.
+	end note
+}
+
+state StateWithCallback <<Permanent>> : functionToExecuteOnEnter()
+note right of StateWithCallback
+	Callback function may be associated with a state.
+
+	FSM will call this function on enter to the state.
+
+	Function will **not** be called
+	if FSM is restored from DB already in this state.
+end note
+
+state IntermediateStateWithCallback : anotherFunction()
+note right of IntermediateStateWithCallback
+	Callback function may be associated
+	with intermediate state as well.
+end note
+
+skinparam StateBackgroundColor<<M>> White
+skinparam StateBorderColor<<M>> LightGrey
+state "About Memory" as Memory<<M>>
+note right of Memory
+	FSM has fixed amount of memory slots.
+
+	Each slot is a variable with name and type.
+
+	FSM uses those variables to evaluate conditional transactions.
+
+	Store FSM to DB means saving current state and memory.
+
+	Callback function may not read memory, only write it.
+end note
+
+TTT1 -right[hidden]-> TTT2
+TTT2 -right[hidden]-> TTT3
+TTT1 -down[hidden]-> StateWithCallback
+StateWithCallback -down[hidden]-> IntermediateStateWithCallback
+IntermediateStateWithCallback -down[hidden]-> Memory
+
+@enduml
